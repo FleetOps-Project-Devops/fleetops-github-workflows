@@ -219,13 +219,16 @@ jobs:
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          JAVA_TOOL_OPTIONS: "-Xmx512m"
+          JAVA_TOOL_OPTIONS: "-Xmx1024m"
+          MAVEN_OPTS: "-Xmx1024m"
         run: |
           snyk auth $SNYK_TOKEN
           snyk test \
             --file=pom.xml \
             --package-manager=maven \
-            --severity-threshold=high
+            --severity-threshold=high \
+            --prune-repeated-subdependencies \
+            -d
 
   build_image:
     name: build-${{ inputs.service_name }}
