@@ -210,14 +210,22 @@ jobs:
         if: ${{ inputs.run_snyk }}
         uses: snyk/actions/setup@master
 
-      - name: Run Snyk OSS scan (high/critical only)
+      - name: Build Maven dependencies (required for Snyk)
+        if: ${{ inputs.run_snyk }}
+        run: mvn -B clean install -DskipTests
+
+      - name: Run Snyk OSS scan
         if: ${{ inputs.run_snyk }}
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          # Cap Maven child-process JVM memory to prevent OOM crash (SNYK-CLI-0000 / exit -13)
-          JAVA_TOOL_OPTIONS: "-Xmx256m"
-        run: snyk test --severity-threshold=high --file=pom.xml
+          JAVA_TOOL_OPTIONS: "-Xmx512m"
+        run: |
+          snyk auth $SNYK_TOKEN
+          snyk test \
+            --file=pom.xml \
+            --package-manager=maven \
+            --severity-threshold=high
 
   build_image:
     name: build-${{ inputs.service_name }}
