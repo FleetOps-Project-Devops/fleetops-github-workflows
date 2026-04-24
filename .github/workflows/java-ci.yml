@@ -210,7 +210,11 @@ jobs:
         if: ${{ inputs.run_snyk }}
         uses: snyk/actions/setup@master
 
-      - name: Build Maven dependencies (required for Snyk)
+      - name: Fix Maven Wrapper permission
+        if: ${{ inputs.run_snyk }}
+        run: chmod +x mvnw || true
+
+      - name: Build Maven dependencies
         if: ${{ inputs.run_snyk }}
         run: mvn -B clean install -DskipTests
 
@@ -219,16 +223,12 @@ jobs:
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-          JAVA_TOOL_OPTIONS: "-Xmx1024m"
-          MAVEN_OPTS: "-Xmx1024m"
         run: |
           snyk auth $SNYK_TOKEN
           snyk test \
             --file=pom.xml \
             --package-manager=maven \
-            --severity-threshold=high \
-            --prune-repeated-subdependencies \
-            -d
+            --severity-threshold=high
 
   build_image:
     name: build-${{ inputs.service_name }}
