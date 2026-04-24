@@ -193,17 +193,14 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      - name: Install Snyk CLI
-        if: ${{ inputs.run_snyk }}
-        run: npm install -g snyk
-
       - name: Snyk OSS scan (high/critical fail)
         if: ${{ inputs.run_snyk }}
+        uses: snyk/actions/node@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          snyk auth "$SNYK_TOKEN"
-          snyk test --severity-threshold=high
+        with:
+          command: test
+          args: --severity-threshold=high
 
   build_image:
     name: build-${{ inputs.service_name }}

@@ -187,20 +187,14 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      - name: Install Snyk CLI
-        if: ${{ inputs.run_snyk }}
-        run: |
-          curl -sSL https://static.snyk.io/cli/latest/snyk-linux -o snyk
-          chmod +x snyk
-          sudo mv snyk /usr/local/bin/snyk
-
       - name: Snyk OSS scan (high/critical fail)
         if: ${{ inputs.run_snyk }}
+        uses: snyk/actions/maven@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          snyk auth "$SNYK_TOKEN"
-          snyk test --severity-threshold=high --file=pom.xml
+        with:
+          command: test
+          args: --severity-threshold=high --file=pom.xml
 
   build_image:
     name: build-${{ inputs.service_name }}
