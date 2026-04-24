@@ -108,20 +108,23 @@ jobs:
       - name: Prepare Docker tags
         id: prep_tags
         shell: bash
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          IMAGE_NAME: ${{ inputs.image_name }}
         run: |
-          PREFIX="docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}"
-          OUT=""
-          PRIMARY=""
-
-          if [[ -z "${{ secrets.DOCKER_USERNAME }}" ]]; then
+          if [[ -z "$DOCKER_USERNAME" ]]; then
             echo "DOCKER_USERNAME secret is required to prepare image tags."
             exit 1
           fi
 
-          if [[ -z "${{ inputs.image_name }}" ]]; then
+          if [[ -z "$IMAGE_NAME" ]]; then
             echo "image_name input is required to prepare image tags."
             exit 1
           fi
+
+          PREFIX="docker.io/${DOCKER_USERNAME}/${IMAGE_NAME}"
+          OUT=""
+          PRIMARY=""
 
           if [[ -z "${{ inputs.image_tags }}" ]]; then
             if [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then

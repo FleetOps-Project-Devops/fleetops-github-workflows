@@ -208,50 +208,15 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      - name: Setup Snyk CLI
+      - name: Snyk OSS scan (high/critical fail)
         if: ${{ inputs.run_snyk }}
-        uses: snyk/actions/setup@master
-      
-      - name: Run Snyk OSS scan (high/critical fail)
-        if: ${{ inputs.run_snyk }}
-        id: snyk_scan
+        uses: snyk/actions/maven@master
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: |
-          set +e
-          snyk test --severity-threshold=high --file=pom.xml > snyk-output.log 2>&1
-          status=$?
-          echo "exit_code=$status" >> "$GITHUB_OUTPUT"
-          cat snyk-output.log
-          exit 0
-
-      - name: Evaluate Snyk result
-        if: ${{ inputs.run_snyk }}
-        shell: bash
-        run: |
-          code="${{ steps.snyk_scan.outputs.exit_code }}"
-          if [[ "$code" == "0" ]]; then
-            echo "Snyk scan passed."
-            exit 0
-          fi
-
-          if [[ "$code" == "1" ]]; then
-            echo "Snyk found vulnerabilities at/above configured threshold."
-            exit 1
-          fi
-
-          # Detect any Snyk CLI runtime crash regardless of specific exit code.
-          # "Child process failed" is a known Snyk infrastructure issue (SNYK-CLI-0000)
-          # that can surface with various exit codes (-13, -1, 2, etc.).
-          if [[ ! -s "snyk-output.log" ]] || \
-             grep -Eiq "Child process failed|SNYK-CLI-0000|exit code: -1[0-9]" "snyk-output.log"; then
-            echo "::warning::Snyk CLI runtime crash detected (exit code: $code). This is a known Snyk infrastructure issue — marking as non-blocking."
-            exit 0
-          fi
-
-          echo "::warning::Snyk exited with unexpected code ($code) but no crash signature found. Marking as non-blocking to avoid false pipeline failures."
-          exit 0
+        with:
+          command: test
+          args: --severity-threshold=high
 
   build_image:
     name: build-${{ inputs.service_name }}
