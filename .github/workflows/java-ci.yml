@@ -189,12 +189,13 @@ jobs:
 
       - name: Snyk OSS scan (high/critical fail)
         if: ${{ inputs.run_snyk }}
-        uses: snyk/actions/maven@master
+        uses: snyk/actions/setup@master
+      
+      - name: Run Snyk OSS scan (high/critical fail)
+        if: ${{ inputs.run_snyk }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          command: test
-          args: --severity-threshold=high --file=pom.xml
+        run: snyk test --severity-threshold=high --file=pom.xml
 
   build_image:
     name: build-${{ inputs.service_name }}
