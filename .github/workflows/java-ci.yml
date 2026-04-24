@@ -220,7 +220,7 @@ jobs:
             exit 1
           fi
 
-          if rg -n "SNYK-CLI-0000|exit code: -13|Child process failed with exit code: -13" "snyk-output.log" >/dev/null; then
+          if grep -En "SNYK-CLI-0000|exit code: -13|Child process failed with exit code: -13" "snyk-output.log" >/dev/null; then
             echo "::warning::Snyk CLI runtime crash detected (SNYK-CLI-0000 / -13). Marking as non-blocking infrastructure issue."
             exit 0
           fi
