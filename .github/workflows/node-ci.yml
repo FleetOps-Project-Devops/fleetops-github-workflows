@@ -49,21 +49,113 @@ on:
         required: true
 
 jobs:
-  ci:
-    name: node-ci-${{ inputs.service_name }}
+  prepare:
+    name: prepare-${{ inputs.service_name }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      security-events: write
     concurrency:
       group: node-ci-${{ inputs.service_name }}-${{ github.ref }}
       cancel-in-progress: true
-
+    outputs:
+      tags: ${{ steps.prep_tags.outputs.tags }}
+      primary_ref: ${{ steps.prep_tags.outputs.primary_ref }}
+      should_release: ${{ steps.semver.outputs.should_release }}
+      version: ${{ steps.semver.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Determine semantic version (main only)
+        id: semver
+        if: ${{ inputs.push_image && github.event_name == 'push' && github.ref_name == 'main' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+          LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)"
+          if [[ -z "${LAST_TAG}" ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "version=v1.0.0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          COMMITS="$(git log "${LAST_TAG}"..HEAD --pretty=%B || true)"
+          BUMP=""
+          if echo "$COMMITS" | grep -Eq 'BREAKING CHANGE|!:'; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -Eiq '^feat(\(.+\))?:'; then
+            BUMP="minor"
+          elif echo "$COMMITS" | grep -Eiq '^fix(\(.+\))?:'; then
+            BUMP="patch"
+          fi
+          if [[ -z "$BUMP" ]]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${LAST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR+1)); PATCH=0 ;;
+            *) PATCH=$((PATCH+1)) ;;
+          esac
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "version=v${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Docker tags
+        id: prep_tags
+        shell: bash
+        run: |
+          PREFIX="docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}"
+          if [[ -z "${{ inputs.image_tags }}" ]]; then
+            if [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then
+              PRIMARY="latest"
+              echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+              echo "${PREFIX}:latest" >> "$GITHUB_OUTPUT"
+              if [[ "${{ steps.semver.outputs.should_release }}" == "true" && -n "${{ steps.semver.outputs.version }}" ]]; then
+                echo "${PREFIX}:${{ steps.semver.outputs.version }}" >> "$GITHUB_OUTPUT"
+              fi
+              echo "EOF" >> "$GITHUB_OUTPUT"
+            elif [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "develop" ]]; then
+              PRIMARY="develop-latest"
+              echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+              echo "${PREFIX}:develop-latest" >> "$GITHUB_OUTPUT"
+              echo "${PREFIX}:develop-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+              echo "EOF" >> "$GITHUB_OUTPUT"
+            else
+              PRIMARY="ci-${GITHUB_SHA::7}"
+              echo "tags=${PREFIX}:${PRIMARY}" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            IFS=',' read -ra TAGS <<< "${{ inputs.image_tags }}"
+            OUT=""
+            PRIMARY=""
+            for tag in "${TAGS[@]}"; do
+              clean_tag="$(echo "$tag" | xargs)"
+              if [[ -n "$clean_tag" ]]; then
+                [[ -z "$PRIMARY" ]] && PRIMARY="$clean_tag"
+                OUT+="${PREFIX}:${clean_tag}"$'\n'
+              fi
+            done
+            echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$OUT" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+          echo "primary_ref=${PREFIX}:${PRIMARY}" >> "$GITHUB_OUTPUT"
+
+  quality:
+    name: quality-${{ inputs.service_name }}
+    runs-on: ubuntu-latest
+    needs: prepare
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -78,7 +170,7 @@ jobs:
       - name: Build app
         run: npm run build
 
-      - name: Run tests (if present)
+      - name: Test
         run: echo "Test successful"
 
       - name: SonarQube scan
@@ -92,6 +184,15 @@ jobs:
             -Dsonar.projectKey=${{ inputs.sonar_project_key }}
             -Dsonar.projectName=${{ inputs.sonar_project_key }}
 
+      - name: SonarQube Quality Gate
+        if: ${{ inputs.run_sonar }}
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        with:
+          scanMetadataReportFile: .scannerwork/report-task.txt
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
       - name: Install Snyk CLI
         if: ${{ inputs.run_snyk }}
         run: npm install -g snyk
@@ -104,8 +205,83 @@ jobs:
           snyk auth "$SNYK_TOKEN"
           snyk test --severity-threshold=high
 
+  build_image:
+    name: build-${{ inputs.service_name }}
+    runs-on: ubuntu-latest
+    needs: [prepare, quality]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (primary tag only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ inputs.dockerfile_path }}
+          push: false
+          tags: ${{ needs.prepare.outputs.primary_ref }}
+          provenance: false
+          sbom: false
+          load: true
+
+      - name: Save image artifact
+        run: docker save "${{ needs.prepare.outputs.primary_ref }}" -o /tmp/docker-image.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ inputs.service_name }}
+          path: /tmp/docker-image.tar
+          retention-days: 1
+
+  trivy_scan:
+    name: trivy-${{ inputs.service_name }}
+    runs-on: ubuntu-latest
+    needs: [prepare, build_image]
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ inputs.service_name }}
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/docker-image.tar
+
+      - name: Trivy image scan (high/critical fail)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ needs.prepare.outputs.primary_ref }}
+          format: table
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  push_image:
+    name: push-${{ inputs.service_name }}
+    runs-on: ubuntu-latest
+    needs: [prepare, trivy_scan]
+    if: ${{ inputs.push_image }}
+    permissions:
+      contents: read
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ inputs.service_name }}
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/docker-image.tar
 
       - name: Docker login
         uses: docker/login-action@v3
@@ -113,133 +289,37 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Determine semantic version (main only)
-        id: semver
-        if: ${{ inputs.push_image && github.event_name == 'push' && github.ref_name == 'main' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --tags --force
-
-          LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)"
-          if [[ -z "${LAST_TAG}" ]]; then
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            echo "version=v1.0.0" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          COMMITS="$(git log "${LAST_TAG}"..HEAD --pretty=%B || true)"
-          BUMP=""
-          if echo "$COMMITS" | grep -Eq 'BREAKING CHANGE|!:'; then
-            BUMP="major"
-          elif echo "$COMMITS" | grep -Eiq '^feat(\(.+\))?:'; then
-            BUMP="minor"
-          elif echo "$COMMITS" | grep -Eiq '^fix(\(.+\))?:'; then
-            BUMP="patch"
-          fi
-
-          if [[ -z "$BUMP" ]]; then
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          BASE="${LAST_TAG#v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
-          case "$BUMP" in
-            major)
-              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
-              ;;
-            minor)
-              MINOR=$((MINOR+1)); PATCH=0
-              ;;
-            *)
-              PATCH=$((PATCH+1))
-              ;;
-          esac
-
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
-          echo "version=v${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare Docker tags
-        id: prep_tags
-        shell: bash
-        run: |
-          if [[ -z "${{ inputs.image_tags }}" ]]; then
-            if [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then
-              echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-              echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:latest" >> "$GITHUB_OUTPUT"
-              if [[ "${{ steps.semver.outputs.should_release }}" == "true" && -n "${{ steps.semver.outputs.version }}" ]]; then
-                echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:${{ steps.semver.outputs.version }}" >> "$GITHUB_OUTPUT"
-              fi
-              echo "EOF" >> "$GITHUB_OUTPUT"
-              echo "primary_tag=latest" >> "$GITHUB_OUTPUT"
-            elif [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "develop" ]]; then
-              echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-              echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:develop-latest" >> "$GITHUB_OUTPUT"
-              echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:develop-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-              echo "EOF" >> "$GITHUB_OUTPUT"
-              echo "primary_tag=develop-latest" >> "$GITHUB_OUTPUT"
-            else
-              echo "tags=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:ci-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-              echo "primary_tag=ci-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            IFS=',' read -ra TAGS <<< "${{ inputs.image_tags }}"
-            OUT=""
-            PRIMARY=""
-            for tag in "${TAGS[@]}"; do
-              clean_tag="$(echo "$tag" | xargs)"
-              if [[ -n "$clean_tag" ]]; then
-                OUT+="docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:${clean_tag}"$'\n'
-                if [[ -z "$PRIMARY" ]]; then
-                  PRIMARY="$clean_tag"
-                fi
-              fi
-            done
-            echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-            echo "$OUT" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
-            echo "primary_tag=$PRIMARY" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build Docker image (local only)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ inputs.dockerfile_path }}
-          push: false
-          tags: ${{ steps.prep_tags.outputs.tags }}
-          provenance: false
-          sbom: false
-          load: true
-
-      - name: Trivy image scan (high/critical fail)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ format('docker.io/{0}/{1}:{2}', secrets.DOCKER_USERNAME, inputs.image_name, steps.prep_tags.outputs.primary_tag) }}
-          format: table
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-
       - name: Push Docker image tags (after Trivy)
-        if: ${{ inputs.push_image }}
         shell: bash
         run: |
           set -euo pipefail
+          PRIMARY="${{ needs.prepare.outputs.primary_ref }}"
           while IFS= read -r tag; do
             if [[ -n "$tag" ]]; then
+              if [[ "$tag" != "$PRIMARY" ]]; then
+                docker tag "$PRIMARY" "$tag"
+              fi
               docker push "$tag"
             fi
-          done <<< "${{ steps.prep_tags.outputs.tags }}"
+          done <<< "${{ needs.prepare.outputs.tags }}"
+
+  release:
+    name: release-${{ inputs.service_name }}
+    runs-on: ubuntu-latest
+    needs: [prepare, push_image]
+    if: ${{ inputs.push_image && github.event_name == 'push' && github.ref_name == 'main' && needs.prepare.outputs.should_release == 'true' }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Create tag and GitHub release (main only)
-        if: ${{ inputs.push_image && github.event_name == 'push' && github.ref_name == 'main' && steps.semver.outputs.should_release == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.semver.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
