@@ -110,29 +110,36 @@ jobs:
         shell: bash
         run: |
           PREFIX="docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}"
+          OUT=""
+          PRIMARY=""
+
+          if [[ -z "${{ secrets.DOCKER_USERNAME }}" ]]; then
+            echo "DOCKER_USERNAME secret is required to prepare image tags."
+            exit 1
+          fi
+
+          if [[ -z "${{ inputs.image_name }}" ]]; then
+            echo "image_name input is required to prepare image tags."
+            exit 1
+          fi
+
           if [[ -z "${{ inputs.image_tags }}" ]]; then
             if [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then
               PRIMARY="latest"
-              echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-              echo "${PREFIX}:latest" >> "$GITHUB_OUTPUT"
+              OUT+="${PREFIX}:latest"$'\n'
               if [[ "${{ steps.semver.outputs.should_release }}" == "true" && -n "${{ steps.semver.outputs.version }}" ]]; then
-                echo "${PREFIX}:${{ steps.semver.outputs.version }}" >> "$GITHUB_OUTPUT"
+                OUT+="${PREFIX}:${{ steps.semver.outputs.version }}"$'\n'
               fi
-              echo "EOF" >> "$GITHUB_OUTPUT"
             elif [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "develop" ]]; then
               PRIMARY="develop-latest"
-              echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-              echo "${PREFIX}:develop-latest" >> "$GITHUB_OUTPUT"
-              echo "${PREFIX}:develop-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-              echo "EOF" >> "$GITHUB_OUTPUT"
+              OUT+="${PREFIX}:develop-latest"$'\n'
+              OUT+="${PREFIX}:develop-${GITHUB_SHA::7}"$'\n'
             else
               PRIMARY="ci-${GITHUB_SHA::7}"
-              echo "tags=${PREFIX}:${PRIMARY}" >> "$GITHUB_OUTPUT"
+              OUT+="${PREFIX}:${PRIMARY}"$'\n'
             fi
           else
             IFS=',' read -ra TAGS <<< "${{ inputs.image_tags }}"
-            OUT=""
-            PRIMARY=""
             for tag in "${TAGS[@]}"; do
               clean_tag="$(echo "$tag" | xargs)"
               if [[ -n "$clean_tag" ]]; then
@@ -140,10 +147,21 @@ jobs:
                 OUT+="${PREFIX}:${clean_tag}"$'\n'
               fi
             done
-            echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-            echo "$OUT" >> "$GITHUB_OUTPUT"
-            echo "EOF" >> "$GITHUB_OUTPUT"
           fi
+
+          if [[ -z "$OUT" ]]; then
+            echo "No Docker tags were generated."
+            exit 1
+          fi
+
+          if [[ -z "$PRIMARY" ]]; then
+            PRIMARY="$(printf "%s" "$OUT" | sed -n '1p')"
+            PRIMARY="${PRIMARY##*:}"
+          fi
+
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          printf "%s" "$OUT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
           echo "primary_ref=${PREFIX}:${PRIMARY}" >> "$GITHUB_OUTPUT"
 
   quality:
