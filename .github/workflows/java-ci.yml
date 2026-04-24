@@ -211,7 +211,7 @@ jobs:
           load: ${{ !inputs.push_image }}
 
       - name: Trivy image scan (high/critical fail)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ format('docker.io/{0}/{1}:{2}', secrets.DOCKER_USERNAME, inputs.image_name, steps.prep_tags.outputs.primary_tag) }}
           format: table
