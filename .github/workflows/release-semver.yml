@@ -1,0 +1,93 @@
+name: Reusable Semantic Release
+
+on:
+  workflow_call:
+    inputs:
+      default_bump:
+        required: false
+        type: string
+        default: patch
+    outputs:
+      version:
+        description: "Generated semantic version tag"
+        value: ${{ jobs.release.outputs.version }}
+
+jobs:
+  release:
+    name: semver-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: semver-release-${{ github.ref }}
+      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)"
+          if [[ -z "${LAST_TAG}" ]]; then
+            echo "version=v1.0.0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          COMMITS="$(git log "${LAST_TAG}"..HEAD --pretty=%B || true)"
+          BUMP="${{ inputs.default_bump }}"
+
+          if echo "$COMMITS" | grep -Eq 'BREAKING CHANGE|!:'; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -Eiq '^feat(\(.+\))?:'; then
+            BUMP="minor"
+          elif echo "$COMMITS" | grep -Eiq '^fix(\(.+\))?:'; then
+            BUMP="patch"
+          fi
+
+          BASE="${LAST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          case "$BUMP" in
+            major)
+              MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR+1)); PATCH=0
+              ;;
+            *)
+              PATCH=$((PATCH+1))
+              ;;
+          esac
+
+          echo "version=v${MAJOR}.${MINOR}.${PATCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag already exists: $VERSION"
+            exit 0
+          fi
+          git tag "$VERSION"
+          git push origin "$VERSION"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "Automated semantic release for $VERSION"
