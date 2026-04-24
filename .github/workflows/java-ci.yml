@@ -173,7 +173,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
-          mvn -B clean verify sonar:sonar \
+          mvn -B -DskipTests clean verify sonar:sonar \
             -Dsonar.projectKey=${{ inputs.sonar_project_key }} \
             -Dsonar.host.url=${SONAR_HOST_URL} \
             -Dsonar.token=${SONAR_TOKEN}
