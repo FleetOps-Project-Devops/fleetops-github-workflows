@@ -168,20 +168,20 @@ jobs:
           if [[ -z "${{ inputs.image_tags }}" ]]; then
             if [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]]; then
               echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-              echo "${{ inputs.image_name }}:latest" >> "$GITHUB_OUTPUT"
+              echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:latest" >> "$GITHUB_OUTPUT"
               if [[ "${{ steps.semver.outputs.should_release }}" == "true" && -n "${{ steps.semver.outputs.version }}" ]]; then
-                echo "${{ inputs.image_name }}:${{ steps.semver.outputs.version }}" >> "$GITHUB_OUTPUT"
+                echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:${{ steps.semver.outputs.version }}" >> "$GITHUB_OUTPUT"
               fi
               echo "EOF" >> "$GITHUB_OUTPUT"
               echo "primary_tag=latest" >> "$GITHUB_OUTPUT"
             elif [[ "${{ inputs.push_image }}" == "true" && "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "develop" ]]; then
               echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-              echo "${{ inputs.image_name }}:develop-latest" >> "$GITHUB_OUTPUT"
-              echo "${{ inputs.image_name }}:develop-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+              echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:develop-latest" >> "$GITHUB_OUTPUT"
+              echo "docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:develop-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
               echo "EOF" >> "$GITHUB_OUTPUT"
               echo "primary_tag=develop-latest" >> "$GITHUB_OUTPUT"
             else
-              echo "tags=${{ inputs.image_name }}:ci-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+              echo "tags=docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:ci-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
               echo "primary_tag=ci-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
             fi
           else
@@ -191,7 +191,7 @@ jobs:
             for tag in "${TAGS[@]}"; do
               clean_tag="$(echo "$tag" | xargs)"
               if [[ -n "$clean_tag" ]]; then
-                OUT+="${{ inputs.image_name }}:${clean_tag}"$'\n'
+                OUT+="docker.io/${{ secrets.DOCKER_USERNAME }}/${{ inputs.image_name }}:${clean_tag}"$'\n'
                 if [[ -z "$PRIMARY" ]]; then
                   PRIMARY="$clean_tag"
                 fi
@@ -209,7 +209,7 @@ jobs:
           context: .
           file: ${{ inputs.dockerfile_path }}
           push: ${{ inputs.push_image }}
-          tags: ${{ inputs.push_image && steps.prep_tags.outputs.tags || format('{0}:{1}', inputs.image_name, steps.prep_tags.outputs.primary_tag) }}
+          tags: ${{ inputs.push_image && steps.prep_tags.outputs.tags || format('docker.io/{0}/{1}:{2}', secrets.DOCKER_USERNAME, inputs.image_name, steps.prep_tags.outputs.primary_tag) }}
           provenance: false
           sbom: false
           load: ${{ !inputs.push_image }}
@@ -217,7 +217,7 @@ jobs:
       - name: Trivy image scan (high/critical fail)
         uses: aquasecurity/trivy-action@0.24.0
         with:
-          image-ref: ${{ inputs.image_name }}:${{ steps.prep_tags.outputs.primary_tag }}
+          image-ref: ${{ format('docker.io/{0}/{1}:{2}', secrets.DOCKER_USERNAME, inputs.image_name, steps.prep_tags.outputs.primary_tag) }}
           format: table
           vuln-type: os,library
           severity: HIGH,CRITICAL
