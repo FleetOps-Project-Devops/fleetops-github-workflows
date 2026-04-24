@@ -17,6 +17,9 @@ on:
       image_name:
         required: true
         type: string
+      docker_username:
+        required: true
+        type: string
       sonar_project_key:
         required: true
         type: string
@@ -37,8 +40,6 @@ on:
         type: string
         default: ""
     secrets:
-      DOCKER_USERNAME:
-        required: true
       DOCKER_PASSWORD:
         required: true
       SONAR_TOKEN:
@@ -108,21 +109,18 @@ jobs:
       - name: Prepare Docker tags
         id: prep_tags
         shell: bash
-        env:
-          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-          IMAGE_NAME: ${{ inputs.image_name }}
         run: |
-          if [[ -z "$DOCKER_USERNAME" ]]; then
-            echo "DOCKER_USERNAME secret is required to prepare image tags."
+          if [[ -z "${{ inputs.docker_username }}" ]]; then
+            echo "docker_username input is required to prepare image tags."
             exit 1
           fi
 
-          if [[ -z "$IMAGE_NAME" ]]; then
+          if [[ -z "${{ inputs.image_name }}" ]]; then
             echo "image_name input is required to prepare image tags."
             exit 1
           fi
 
-          PREFIX="docker.io/${DOCKER_USERNAME}/${IMAGE_NAME}"
+          PREFIX="docker.io/${{ inputs.docker_username }}/${{ inputs.image_name }}"
           OUT=""
           PRIMARY=""
 
@@ -208,15 +206,18 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-      - name: Snyk OSS scan (high/critical fail)
+      - name: Setup Snyk CLI
         if: ${{ inputs.run_snyk }}
-        uses: snyk/actions/maven@master
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk OSS scan (high/critical only)
+        if: ${{ inputs.run_snyk }}
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          command: test
-          args: --severity-threshold=high
+          # Cap Maven child-process JVM memory to prevent OOM crash (SNYK-CLI-0000 / exit -13)
+          JAVA_TOOL_OPTIONS: "-Xmx256m"
+        run: snyk test --severity-threshold=high --file=pom.xml
 
   build_image:
     name: build-${{ inputs.service_name }}
@@ -299,7 +300,7 @@ jobs:
       - name: Docker login
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
+          username: ${{ inputs.docker_username }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Push Docker image tags (after Trivy)
