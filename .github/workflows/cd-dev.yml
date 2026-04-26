@@ -39,7 +39,7 @@ jobs:
         id: resolve-tag
         run: |
           set -euo pipefail
-          TAG="${GITHUB_SHA::7}"
+          TAG="develop-${GITHUB_SHA::7}"
           echo "image-tag=${TAG}" >> $GITHUB_OUTPUT
           echo "Resolved dev image tag: ${TAG}"
 
